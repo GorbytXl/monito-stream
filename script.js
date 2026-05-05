@@ -1,27 +1,28 @@
 // =============================================
 //  CONFIGURACIÓN
 // =============================================
-const CANAL_TWITCH = 'gorbyt_x';
-const ESCALA       = 4;    // Tamaño del monito (35px * 4 = 140px)
-const VELOCIDAD    = 2;    // Velocidad de movimiento
-
-// Color del nombre según el estado
-const COLOR_NOMBRE_COMIDA  = '#FFD700'; // amarillo dorado mientras la comida está en el suelo
-const COLOR_NOMBRE_COMIENDO = '#FF6B6B'; // rojo/rosa mientras el monito come
+const CANAL_TWITCH          = 'gorbyt_x';
+const ESCALA                = 4;
+const VELOCIDAD             = 2;
+const COLOR_NOMBRE_COMIDA   = '#FFD700';
+const COLOR_NOMBRE_COMIENDO = '#FF6B6B';
+const COLOR_SALUDO          = '#88EEFF';
+const COMANDOS_COMIDA       = ['!comida', '!comer', '!feed', '!comiendo'];
+const SALUDOS_CHAT          = ['hola', 'hello', 'hi', 'buenas', 'ola', 'saludos', 'hey'];
 // =============================================
 
-const canvas = document.getElementById('lienzo');
-const ctx    = canvas.getContext('2d');
-canvas.width  = window.innerWidth;
-canvas.height = window.innerHeight;
+const canvas   = document.getElementById('lienzo');
+const ctx      = canvas.getContext('2d');
 
-window.addEventListener('resize', () => {
+function resizarCanvas() {
   canvas.width  = window.innerWidth;
   canvas.height = window.innerHeight;
-});
+}
+resizarCanvas();
+window.addEventListener('resize', resizarCanvas);
 
 // -----------------------------------------------
-// Utilidades de imagen
+// Imágenes
 // -----------------------------------------------
 function cargarImagen(src) {
   const img = new Image();
@@ -32,19 +33,15 @@ function imagenValida(img) {
   return img && img.complete && img.naturalWidth > 0;
 }
 
-// Frames de caminar (caminar_01 … caminar_06)
 const framesWalk = [];
 for (let i = 1; i <= 6; i++) framesWalk.push(cargarImagen(`img/caminar_0${i}.png`));
 
-// Frames de parado (parado_01 … parado_04)
 const framesIdle = [];
 for (let i = 1; i <= 4; i++) framesIdle.push(cargarImagen(`img/parado_0${i}.png`));
 
-// Frames de comer (comer_01 … comer_04) — opcionales
 const framesEat = [];
 for (let i = 1; i <= 4; i++) framesEat.push(cargarImagen(`img/comer_0${i}.png`));
 
-// Imagen de comida — fallback a emoji si no existe
 const comidaImg = cargarImagen('img/comida.png');
 
 function obtenerFrames(estado) {
@@ -69,27 +66,64 @@ function obtenerFrames(estado) {
 }
 
 // -----------------------------------------------
-// Dibujar texto con borde (para que se vea sobre cualquier fondo)
+// Texto con borde
 // -----------------------------------------------
-function dibujarTexto(texto, x, y, color = '#FFFFFF', fontSize = 14) {
+function dibujarTexto(texto, x, y, color = '#FFF', fontSize = 14) {
   ctx.save();
-  ctx.font = `bold ${fontSize}px "Arial", sans-serif`;
-  ctx.textAlign = 'center';
+  ctx.font         = `bold ${fontSize}px Arial, sans-serif`;
+  ctx.textAlign    = 'center';
   ctx.textBaseline = 'bottom';
-
-  // Sombra/borde negro
-  ctx.strokeStyle = '#000000';
-  ctx.lineWidth   = 4;
+  ctx.strokeStyle  = '#000';
+  ctx.lineWidth    = 4;
   ctx.strokeText(texto, x, y);
-
-  // Texto principal
   ctx.fillStyle = color;
   ctx.fillText(texto, x, y);
   ctx.restore();
 }
 
 // -----------------------------------------------
-// Clase Monito
+// Saludos flotantes en pantalla
+// -----------------------------------------------
+const saludosFlotantes = [];
+
+function agregarSaludoFlotante(usuario) {
+  const respuestas = [
+    `¡Hola @${usuario}! 👋`,
+    `¡Buenas @${usuario}! 🐒`,
+    `¡Qué tal @${usuario}! 😄`,
+    `¡Hola hola @${usuario}! 🎉`,
+    `¡Bienvenido @${usuario}! 🍌`,
+  ];
+  const texto = respuestas[Math.floor(Math.random() * respuestas.length)];
+  const x = Math.random() * (canvas.width - 200) + 100;
+  saludosFlotantes.push({ texto, x, y: canvas.height * 0.3, alpha: 1.0, vy: -1.2 });
+}
+
+function actualizarYDibujarSaludos() {
+  for (let i = saludosFlotantes.length - 1; i >= 0; i--) {
+    const s = saludosFlotantes[i];
+    s.y += s.vy;
+    s.alpha -= 0.008;
+    if (s.alpha <= 0) {
+      saludosFlotantes.splice(i, 1);
+      continue;
+    }
+    ctx.save();
+    ctx.globalAlpha = s.alpha;
+    ctx.font         = 'bold 22px Arial, sans-serif';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.strokeStyle  = '#000';
+    ctx.lineWidth    = 5;
+    ctx.strokeText(s.texto, s.x, s.y);
+    ctx.fillStyle = COLOR_SALUDO;
+    ctx.fillText(s.texto, s.x, s.y);
+    ctx.restore();
+  }
+}
+
+// -----------------------------------------------
+// Monito
 // -----------------------------------------------
 class Mono {
   constructor(x, y) {
@@ -103,7 +137,10 @@ class Mono {
     this.objetivo       = null;
     this.comiendo       = false;
     this.tiempoEnEstado = 0;
-    this.nombreEncima   = null; // nombre del usuario mientras come
+    this.nombreEncima   = null;
+    this.comidaObjetivo = null;
+    this.textoBurbuja   = null;
+    this.tiempoBurbuja  = 0;
   }
 
   cambiarEstado(nuevo) {
@@ -120,16 +157,33 @@ class Mono {
     this.cambiarEstado('walk');
   }
 
+  mostrarBurbuja(texto) {
+    this.textoBurbuja  = texto;
+    this.tiempoBurbuja = 200;
+  }
+
+  saludar(usuario) {
+    const frases = [
+      `¡Hola @${usuario}!`,
+      `¡Buenas @${usuario}!`,
+      `¡Hola, como tas @${usuario}!`,
+      `¡Bienvenido @${usuario}!`,
+    ];
+    this.mostrarBurbuja(frases[Math.floor(Math.random() * frases.length)]);
+    agregarSaludoFlotante(usuario);
+  }
+
   actualizar() {
     this.contadorFrame++;
     this.tiempoEnEstado++;
+
+    if (this.tiempoBurbuja > 0) this.tiempoBurbuja--;
 
     const frames = obtenerFrames(this.estado);
     if (frames.length > 0 && this.contadorFrame % 8 === 0) {
       this.frame = (this.frame + 1) % frames.length;
     }
 
-    // ---- Con objetivo (ir a comer) ----
     if (this.objetivo) {
       const dx   = this.objetivo.x - this.x;
       const dy   = this.objetivo.y - this.y;
@@ -146,22 +200,26 @@ class Mono {
         this.vy = 0;
         if (!this.comiendo) {
           this.comiendo     = true;
-          // El nombre pasa del suelo al monito
-          this.nombreEncima = comidaEnPantalla ? comidaEnPantalla.usuario : null;
+          const comidaActual = this.comidaObjetivo;
+          this.nombreEncima = comidaActual ? comidaActual.usuario : null;
           this.cambiarEstado('eat');
           setTimeout(() => {
             this.cambiarEstado('idle');
-            this.objetivo     = null;
-            this.comiendo     = false;
-            this.nombreEncima = null;
-            comidaEnPantalla  = null;
+            this.objetivo      = null;
+            this.comiendo      = false;
+            this.nombreEncima  = null;
+            if (comidaActual) {
+              const idx = colaComida.indexOf(comidaActual);
+              if (idx !== -1) colaComida.splice(idx, 1);
+            }
+            this.comidaObjetivo = null;
+            irSiguienteComida();
           }, 2500);
         }
       }
       return;
     }
 
-    // ---- Sin objetivo: movimiento autónomo ----
     if (this.tiempoEnEstado > 180) {
       const r = Math.random();
       if (this.estado === 'idle' && r < 0.02) {
@@ -191,7 +249,7 @@ class Mono {
     }
   }
 
-  dibujar(ctx) {
+  dibujar() {
     const frames = obtenerFrames(this.estado);
     if (frames.length === 0) return;
 
@@ -212,64 +270,94 @@ class Mono {
     }
     ctx.restore();
 
-    // Nombre encima del monito mientras come
     if (this.nombreEncima && this.comiendo) {
-      dibujarTexto(
-        `@${this.nombreEncima}`,
-        this.x + w / 2,
-        this.y - 6,
-        COLOR_NOMBRE_COMIENDO,
-        15
-      );
+      dibujarTexto(`@${this.nombreEncima}`, this.x + w / 2, this.y - 6, COLOR_NOMBRE_COMIENDO, 15);
+    }
+
+    // Burbuja de saludo
+    if (this.tiempoBurbuja > 0 && this.textoBurbuja) {
+      const alpha = Math.min(1, this.tiempoBurbuja / 30);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      const bx = this.x + w / 2;
+      const by = this.y - 18;
+      ctx.font         = 'bold 15px Arial, sans-serif';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.strokeStyle  = '#000';
+      ctx.lineWidth    = 4;
+      ctx.strokeText(this.textoBurbuja, bx, by);
+      ctx.fillStyle = COLOR_SALUDO;
+      ctx.fillText(this.textoBurbuja, bx, by);
+      ctx.restore();
     }
   }
 }
 
 // -----------------------------------------------
-// Estado global
+// Estado global — COLA DE COMIDAS (múltiples)
 // -----------------------------------------------
 const monito = new Mono(200, 400);
-let comidaEnPantalla = null; // { x, y, posFinalY, cayendo, usuario }
+const colaComida = [];
+
+const EMOJIS_FRUTAS = ['🍌', '🍎', '🍊', '🍇', '🍓', '🍉', '🍑', '🥝', '🍍', '🥭'];
 
 // -----------------------------------------------
-// Dibujar comida + nombre del usuario sobre ella
+// Lanzar comida
 // -----------------------------------------------
-function dibujarComida() {
-  if (!comidaEnPantalla) return;
+function lanzarComida(usuario) {
+  const posX      = Math.random() * (canvas.width  - 150) + 50;
+  const posYFinal = Math.random() * (canvas.height - 200) + 100;
+  const emoji     = EMOJIS_FRUTAS[Math.floor(Math.random() * EMOJIS_FRUTAS.length)];
+  colaComida.push({ x: posX, y: -60, posFinalY: posYFinal, cayendo: true, usuario, emoji });
+}
 
-  // Animación de caída
-  if (comidaEnPantalla.cayendo) {
-    comidaEnPantalla.y += 6;
-    if (comidaEnPantalla.y >= comidaEnPantalla.posFinalY) {
-      comidaEnPantalla.y      = comidaEnPantalla.posFinalY;
-      comidaEnPantalla.cayendo = false;
-      monito.setObjetivo(comidaEnPantalla.x, comidaEnPantalla.y);
-    }
-  }
-
-  const cx = comidaEnPantalla.x;
-  const cy = comidaEnPantalla.y;
-
-  // Dibujar imagen o emoji
-  if (imagenValida(comidaImg)) {
-    ctx.drawImage(comidaImg, cx, cy, 40, 40);
-  } else {
-    ctx.font = '32px serif';
-    ctx.textBaseline = 'top';
-    ctx.fillText('🍌', cx, cy);
-  }
-
-  // Nombre del usuario ENCIMA de la comida (mientras está en el suelo)
-  if (comidaEnPantalla.usuario && !monito.comiendo) {
-    dibujarTexto(
-      `@${comidaEnPantalla.usuario}`,
-      cx + 20,
-      cy - 6,
-      COLOR_NOMBRE_COMIDA,
-      14
-    );
+function irSiguienteComida() {
+  if (monito.comiendo) return;
+  const siguiente = colaComida.find(c => !c.cayendo && c !== monito.comidaObjetivo);
+  if (siguiente) {
+    monito.comidaObjetivo = siguiente;
+    monito.setObjetivo(siguiente.x, siguiente.y);
   }
 }
+
+// -----------------------------------------------
+// Dibujar todas las comidas
+// -----------------------------------------------
+function dibujarTodasLasComidas() {
+  for (const comida of colaComida) {
+    if (comida.cayendo) {
+      comida.y += 6;
+      if (comida.y >= comida.posFinalY) {
+        comida.y       = comida.posFinalY;
+        comida.cayendo = false;
+        irSiguienteComida();
+      }
+    }
+
+    const cx = comida.x;
+    const cy = comida.y;
+
+    if (imagenValida(comidaImg)) {
+      ctx.drawImage(comidaImg, cx, cy, 40, 40);
+    } else {
+      ctx.save();
+      ctx.font = '36px serif';
+      ctx.textBaseline = 'top';
+      ctx.fillText(comida.emoji || '🍌', cx, cy);
+      ctx.restore();
+    }
+
+    if (comida.usuario && !(monito.comiendo && monito.comidaObjetivo === comida)) {
+      dibujarTexto(`@${comida.usuario}`, cx + 18, cy - 6, COLOR_NOMBRE_COMIDA, 14);
+    }
+  }
+}
+
+// -----------------------------------------------
+// Usuarios saludados recientemente (anti-spam)
+// -----------------------------------------------
+const usuariosSaludados = new Set();
 
 // -----------------------------------------------
 // Game loop
@@ -277,43 +365,87 @@ function dibujarComida() {
 function gameLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   monito.actualizar();
-  monito.dibujar(ctx);
-  dibujarComida();
+  monito.dibujar();
+  dibujarTodasLasComidas();
+  actualizarYDibujarSaludos();
   requestAnimationFrame(gameLoop);
 }
 gameLoop();
 
 // -----------------------------------------------
-// Twitch chat
+// Twitch IRC via WebSocket puro
 // -----------------------------------------------
-try {
-  const cliente = new tmi.Client({ channels: [CANAL_TWITCH] });
-  cliente.connect().catch(err => console.warn('Twitch connect error:', err));
+function conectarTwitch() {
+  const ws = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
 
-  cliente.on('message', (canal, tags, mensaje, self) => {
-    if (self) return;
-    const comando  = mensaje.trim().toLowerCase();
-    const usuario  = tags['display-name'] || tags.username || 'anon';
+  ws.onopen = () => {
+    ws.send('CAP REQ :twitch.tv/tags twitch.tv/commands');
+    ws.send('PASS SCHMOOPIIE');
+    ws.send('NICK justinfan' + Math.floor(Math.random() * 999999));
+    ws.send('JOIN #' + CANAL_TWITCH.toLowerCase());
+  };
 
-    if (comando === '!comida') {
-      const posX      = Math.random() * (canvas.width  - 150) + 50;
-      const posYFinal = Math.random() * (canvas.height - 200) + 100;
+  ws.onmessage = (event) => {
+    const lineas = event.data.split('\r\n');
+    for (const linea of lineas) {
+      if (linea.startsWith('PING')) {
+        ws.send('PONG :tmi.twitch.tv');
+        continue;
+      }
 
-      comidaEnPantalla = {
-        x:        posX,
-        y:        -50,
-        posFinalY: posYFinal,
-        cayendo:  true,
-        usuario:  usuario   // <-- nombre guardado aquí
-      };
+      // Detectar JOIN — alguien entra al canal
+      const joinMatch = linea.match(/:([^!]+)![^\s]+ JOIN #/);
+      if (joinMatch && !linea.includes('PRIVMSG')) {
+        const usuarioJoin = joinMatch[1];
+        if (!usuarioJoin.startsWith('justinfan') && !usuariosSaludados.has(usuarioJoin)) {
+          usuariosSaludados.add(usuarioJoin);
+          setTimeout(() => usuariosSaludados.delete(usuarioJoin), 120000);
+          monito.saludar(usuarioJoin);
+        }
+        continue;
+      }
 
-      // Interrumpir lo que esté haciendo el monito
-      monito.objetivo     = null;
-      monito.comiendo     = false;
-      monito.nombreEncima = null;
-      monito.cambiarEstado('idle');
+      if (!linea.includes('PRIVMSG')) continue;
+
+      try {
+        let usuario = 'anon';
+        const tagMatch = linea.match(/display-name=([^;]+)/);
+        if (tagMatch && tagMatch[1]) {
+          usuario = tagMatch[1];
+        } else {
+          const nickMatch = linea.match(/:([^!]+)!/);
+          if (nickMatch) usuario = nickMatch[1];
+        }
+
+        const msgMatch = linea.match(/PRIVMSG #\S+ :(.+)/);
+        if (!msgMatch) continue;
+        const mensaje = msgMatch[1].trim().toLowerCase();
+
+        // Comando de comida
+        if (COMANDOS_COMIDA.includes(mensaje)) {
+          lanzarComida(usuario);
+          continue;
+        }
+
+        // Saludo en el chat
+        const esSaludo = SALUDOS_CHAT.some(s =>
+          mensaje === s ||
+          mensaje.startsWith(s + ' ') ||
+          mensaje.startsWith(s + '!') ||
+          mensaje.startsWith(s + ',')
+        );
+        if (esSaludo) {
+          monito.saludar(usuario);
+        }
+
+      } catch (e) {
+        // ignorar líneas malformadas
+      }
     }
-  });
-} catch (e) {
-  console.warn('tmi.js no disponible:', e);
+  };
+
+  ws.onerror = () => {};
+  ws.onclose = () => { setTimeout(conectarTwitch, 3000); };
 }
+
+conectarTwitch();
